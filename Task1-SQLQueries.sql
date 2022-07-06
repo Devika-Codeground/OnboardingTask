@@ -19,64 +19,68 @@ AND h.IsActive = 1 -- current home value
 
 --a.	For each property in question a), return the following:                                                                      -- i. Using rental payment amount, rental payment frequency, tenant start date and tenant end date to write a query that returns the sum of all payments from start date to end date. 
 /*Approach - 
--1. First get the rented properties by the owner
--2. It was notied that the payment frequencies are (or can be) different for same property, e.g propertyId 5638 
--3. TenantProperty seems to have the latest frquency type for the payment. So, PropertyRentalPayment and TenantProperty will not exactly match on frequency id
--4. As the excercise specifies using the Payment Frequency, perform right join to take care of missed records with previous frequency
+-1. Get the properties, rent frequency types for the owner 1426
+ 2. If Rent Frequency is Weekly, then calculate the no. of weeks during the tenancy tenure , multiplied by the rent 
+	If Rent Frequency is Fortnightly, then -
+										calculate the no. of weeks during the tenancy tenure. 
+										divide no of weeks by 2 as to match fortnightly payment
+										multiply by the rent payment
+	If Rent Frequency is Monthly, then calculate the no. of months during the tenancy tenure , multiply by the rent
 -*/
-WITH cte_RentalPropertiesByOwner AS
-   (
-   SELECT p.Id, p.Name,TenantId, StartDate AS 'Tenancy Start Date', EndDate AS 'Tenancy End Date', tp.[PaymentFrequencyId] AS 'Payment Frequency'
-   FROM [dbo].[TenantProperty] tp 
-   INNER JOIN [dbo].[Property] p
-   ON tp.PropertyId = p.Id
-	   INNER JOIN [dbo].[OwnerProperty] o
-   ON p.Id = o.PropertyId
-   WHERE o.OwnerId = 1426   )
-
-   SELECT  cte_rp.Name,cte_rp.[Tenancy Start Date], cte_rp.[Tenancy End Date],
-   tpf.Name As 'Rent Payment Frequency', SUM(Amount) AS 'Total Payment'
-   FROM [dbo].[PropertyRentalPayment] rp
-   INNER JOIN cte_RentalPropertiesByOwner cte_rp
-   ON rp.PropertyId = cte_rp.Id
-   RIGHT OUTER JOIN cte_RentalPropertiesByOwner cte_rp1
-   ON rp.FrequencyType = cte_rp1.[Payment Frequency]
-   INNER JOIN [dbo].[TenantPaymentFrequencies] tpf
-   ON tpf.Id = rp.FrequencyType
-   AND tpf.Id = cte_rp1.[Payment Frequency]
-   WHERE   
-   Date BETWEEN cte_rp1.[Tenancy Start Date] AND cte_rp1.[Tenancy End Date]
-   GROUP BY cte_rp.Name, cte_rp.[Tenancy Start Date], cte_rp.[Tenancy End Date],  rp.FrequencyType, tpf.Name
+SELECT p.Name AS 'Property Name' , p.Id AS 'Property Id'
+, tp.StartDate AS 'Tenancy Start Date', tp.EndDate AS 'Tenancy End Date'
+, trt.Name AS 'Rent Payment Frequency', prp.Amount AS 'Rent Amount'
+, CASE
+	WHEN trt.Name ='Weekly' THEN (DATEDIFF(ww,tp.StartDate, tp.EndDate) * prp.Amount) -- no. of weekes * weekly payment
+	WHEN trt.[Name] ='Fortnightly' THEN ((DATEDIFF(ww,tp.StartDate, tp.EndDate)/2) * prp.Amount)
+	ELSE (DATEDIFF(mm,tp.StartDate, tp.EndDate) * prp.Amount)
+ END AS 'Total Rent Payment'
+FROM Property AS p
+INNER JOIN OwnerProperty  op 
+ON p.Id=op.PropertyId
+INNER JOIN PropertyRentalPayment  prp 
+ON p.Id=prp.PropertyId
+INNER JOIN TargetRentType trt 
+ON prp.FrequencyType=trt.Id
+INNER JOIN TenantProperty tp 
+ON p.Id=tp.PropertyId
+WHERE op.OwnerId=1426
 
 ---ii.	Display the yield for all properties from a.
--- Observation - PropertyId 5638 has Frequency types Weekly  in [PropertyFinance] but Weekly and Monthly in [PropertyRentalPayment]....
-SELECT q.[Property Name], q.[Property Description], q.Address,q.[Property Owner],q.[Rent Payment Frequency],
-SUM(q.yield) AS 'Total Yield'
-FROM (
-   SELECT p.Name AS 'Property Name', 
-p.Description AS 'Property Description', 
-CONCAT(a.Number, ' ' , a.Street, ' ', a.Suburb, ' ', a.City, ' ' , a.Region,' ' , a.PostCode) AS 'Address', 
-CONCAT(person.FirstName,' ' ,person.LastName) AS 'Property Owner', 
-tf.Name AS 'Rent Payment Frequency',
-pf.yield 
-FROM [dbo].[PropertyFinance] pf
-INNER JOIN [dbo].[Property] p
-ON pf.PropertyId = p.Id
-INNER JOIN [dbo].[OwnerProperty] o
-ON o.PropertyId = p.Id
-AND o.PropertyId = pf.PropertyId
-INNER JOIN [dbo].[Person] person
-ON person.Id = o.OwnerId
-INNER JOIN [dbo].[Address] a
-ON a.AddressId = p.AddressId
-INNER JOIN [dbo].[PropertyRentalPayment] rp
-ON rp.PropertyId = p.Id
-AND rp.PropertyId = o.PropertyId
-INNER JOIN [dbo].[TenantPaymentFrequencies] tf
-ON tf.Id = rp.FrequencyType
-WHERE o.OwnerId = 1426
-    ) q
-GROUP BY q.[Property Name], q.[Property Description], q.Address,q.[Property Owner], q.[Rent Payment Frequency]
+-- Yield = ((Total income from rent - Property expense) / Property Value) *100
+
+SELECT p.Name AS 'Property Name'
+, p.Id AS 'Property Id'
+, tp.StartDate AS 'Tenancy Start Date'
+, tp.EndDate AS 'Tenancy End Date'
+, trt.Name AS 'Rent Payment Frequency'
+, prp.Amount AS 'Rent Amount'
+,((
+(CASE
+WHEN trt.Name ='Weekly' THEN (DATEDIFF(ww,tp.StartDate, tp.EndDate) * prp.Amount)
+WHEN trt.Name ='Fortnightly' THEN ((DATEDIFF(ww,tp.StartDate, tp.EndDate)/2) * prp.Amount)
+ELSE (DATEDIFF(mm,tp.StartDate, tp.EndDate) * prp.Amount)
+ END
+ )- COALESCE(SUM(pe.Amount),0)
+ )/phv.Value
+)*100 AS Yield
+
+FROM Property AS p
+INNER JOIN OwnerProperty  op 
+ON p.Id=op.PropertyId
+INNER JOIN PropertyRentalPayment prp 
+ON p.Id=prp.PropertyId
+INNER JOIN TargetRentType trt 
+ON prp.FrequencyType=trt.Id
+INNER JOIN TenantProperty  tp 
+ON p.Id=tp.PropertyId
+INNER JOIN PropertyHomeValue  phv 
+ON p.Id=phv.PropertyId
+LEFT JOIN PropertyExpense  pe 
+ON p.Id=pe.PropertyId
+WHERE  phv.IsActive=1
+AND op.OwnerId=1426 
+GROUP BY p.Name,p.Id,trt.Name,prp.Amount,tp.StartDate,tp.EndDate, phv.Value
 
 --- Display all the jobs available
 --- Available jobs .. treating all jobs which are NOT (Finished, Cancelled , Deleted )
